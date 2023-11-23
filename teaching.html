@@ -88,13 +88,13 @@
         }
         effectFn.options = options
         effectFn.deps = []
-        
+
         if (!options.lazy) {
             effectFn()
         }
 
         return effectFn
-        
+
 
     }
 
@@ -104,7 +104,7 @@
     //     },
     //     {
     //         scheduler(fn) {
-                
+
     //         },
     //         lazy: true
     //     }
@@ -116,9 +116,9 @@
 
         const effectFn = effect(getter, {
             lazy: true,
-            scheduler(){
+            scheduler() {
                 if (!dirty) {
-                    dirty = true 
+                    dirty = true
                     trigger(obj, 'value')
                 }
             }
@@ -149,24 +149,41 @@
 
         let oldValue, newValue
 
+        let cleanup
+
+        function onInvalidate(fn) {
+            cleanup = fn
+        }
+
         const job = () => {
             newValue = effectFn()
-            cb(newValue, oldValue)
+
+            if (cleanup) {
+                cleanup()
+            }
+
+            cb(newValue, oldValue, onInvalidate)
             oldValue = deepClone(newValue)
         }
 
-        const effectFn =effect(
+        const effectFn = effect(
             () => getter(),
             {
                 lazy: true,
-                scheduler: job
+                scheduler: () => {
+                    if (options.flush === 'post') {
+                        const p = Promise.resolve()
+                        p.then(job)
+                    } else {
+                        job()
+                    }
+                }
             }
         )
         if (options.immediate) {
             job()
         } else {
             oldValue = deepClone(effectFn())
-            console.log(oldValue, 'll');
         }
 
     }
@@ -180,16 +197,35 @@
         return value
     }
 
-    watch(obj, (val, oldVal) => {
-        console.log(val, oldVal);
-        console.log('数据变化了');
-    }, {
-        immediate: true
+    // watch(obj, (val, oldVal) => {
+    //     console.log(val, oldVal);
+    //     console.log('数据变化了');
+    // }, {
+    //     immediate: true
+    // })
+
+    // setTimeout(()=> {
+    //     obj.foo = 3
+    // }, 3000)
+
+    watch(obj, async (newValue, oldValue, onInvalidate) => {
+        let expired = false
+        onInvalidate(() => {
+            expired = true
+        })
+
+        const res = await fetch('/path/to/request')
+
+        if (!expired) {
+            finalData = res
+        }
     })
 
-    setTimeout(()=> {
-        obj.foo = 3
-    }, 3000)
+    // 第一次修改
+    obj.foo++
+    setTimeout(() => {   // 200ms 后做第二次修改
+        obj.foo++
+    }, 200)
 
 
 
