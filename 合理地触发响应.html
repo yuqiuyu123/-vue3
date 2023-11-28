@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+
+<body>
+    <script>
+        const deepClone = (value) => {
+            if (!value) return
+            return JSON.parse(JSON.stringify(value))
+        }
+
+        const TriggerType = {
+            SET: 'SET',
+            ADD: 'ADD',
+            DELETE: 'DELETE'
+        }
+
+        // for in 拦截使用Reflect.ownKeys()来获取只属于对象自身拥有的健
+
+        let activeEffect
+        const effectStack = []
+        const bucket = new WeakMap()
+        const ITERATE_KEY = Symbol()
+
+        function reactive(data) {
+            return new Proxy(data, {
+                get(target, key, receiver) {
+                    // 代理对象可以通过raw属性访问原始数据
+                    if (key === 'raw') {
+                        // console.log('iiii');
+                        return target
+                    }
+                    track(target, key)
+                    return Reflect.get(target, key, receiver)
+                },
+
+                ownKeys(target) {
+                    track(target, ITERATE_KEY)
+                    return Reflect.ownKeys(target)
+                },
+
+                deleteProperty(target, key) {
+                    const hadKey = Object.prototype.hasOwnProperty.call(target, key)
+                    const res = Reflect.deleteProperty(target, key)
+                    if (res && hadKey) {
+                        trigger(target, key, TriggerType.DELETE)
+                    }
+                    return res
+                },
+
+                set(target, key, newValue, receiver) {
+                    // 获取旧值
+                    const oldValue = target[key]
+                    const type = Object.prototype.hasOwnProperty.call(target, key) ? TriggerType.SET : TriggerType.ADD
+                    const res = Reflect.set(target, key, newValue, receiver)
+                    if (target === receiver.raw) {
+                        // 判断新旧值是否相等, 值相同的没必要触发 NaN情况要特殊处理
+                        if (oldValue !== newValue && (oldValue === oldValue || newValue === newValue)) {
+                            trigger(target, key, type)
+                        }
+                      
+                    }
+                    return res
+
+                }
+            })
+        }
+
+
+
+        function track(target, key) {
+            if (!activeEffect) return
+            let depsMap = bucket.get(target)
+            if (!depsMap) bucket.set(target, (depsMap = new Map()))
+            let deps = depsMap.get(key)
+            if (!deps) depsMap.set(key, (deps = new Set()))
+            deps.add(activeEffect)
+
+            activeEffect.deps.push(deps)
+        }
+
+        function trigger(target, key, type) {
+            const depsMap = bucket.get(target)
+            if (!depsMap) return
+            const effects = depsMap.get(key)
+            const effectsToRun = new Set()
+
+            effects && effects.forEach(effectFn => {
+                if (effectFn !== activeEffect) effectsToRun.add(effectFn)
+            })
+
+            if (type === TriggerType.ADD || type === TriggerType.DELETE) {
+                const iterateEffects = depsMap.get(ITERATE_KEY)
+                iterateEffects && iterateEffects.forEach((effectFn) => {
+                    if (effectFn != activeEffect) {
+                        effectsToRun.add(effectFn)
+                    }
+                })
+            }
+
+
+
+            effectsToRun.forEach(effectFn => {
+                if (effectFn.options.scheduler) {
+                    effectFn.options.scheduler(effectFn)
+                } else {
+                    effectFn()
+                }
+            })
+        }
+
+        function cleanup(effectFn) {
+            for (let i = 0; i < effectFn.deps.length; i++) {
+                const deps = effectFn.deps[i]
+                deps.delete(effectFn)
+            }
+            effectFn.deps.length = 0
+        }
+
+
+        function effect(fn, options = {}) {
+            const effectFn = () => {
+                cleanup(effectFn)
+                activeEffect = effectFn
+                effectStack.push(effectFn)
+                const res = fn()
+                effectStack.pop()
+                activeEffect = effectStack[effectStack.length - 1]
+
+                return res
+            }
+            effectFn.options = options
+            effectFn.deps = []
+
+            if (!options.lazy) {
+                effectFn()
+            }
+
+            return effectFn
+
+
+        }
+
+
+        function computed(getter) {
+            let value
+            let dirty = true
+
+            const effectFn = effect(getter, {
+                lazy: true,
+                scheduler() {
+                    if (!dirty) {
+                        dirty = true
+                        trigger(obj, 'value')
+                    }
+                }
+            })
+
+            const obj = {
+                get value() {
+                    if (dirty) {
+                        value = effectFn()
+                        dirty = false
+                    }
+                    track(obj, 'value')
+                    return value
+                }
+            }
+            return obj
+        }
+
+        // const sumRes = computed(()=> obj.foo + obj.bar)
+
+        function watch(source, cb, options) {
+            let getter
+            if (typeof source === 'function') {
+                getter = source
+            } else {
+                getter = () => traverse(source)
+            }
+
+            let oldValue, newValue
+
+            let cleanup
+
+            function onInvalidate(fn) {
+                cleanup = fn
+            }
+
+            const job = () => {
+                newValue = effectFn()
+
+                if (cleanup) {
+                    cleanup()
+                }
+
+                cb(newValue, oldValue, onInvalidate)
+                oldValue = deepClone(newValue)
+            }
+
+            const effectFn = effect(
+                () => getter(),
+                {
+                    lazy: true,
+                    scheduler: () => {
+                        if (options.flush === 'post') {
+                            const p = Promise.resolve()
+                            p.then(job)
+                        } else {
+                            job()
+                        }
+                    }
+                }
+            )
+            if (options.immediate) {
+                job()
+            } else {
+                oldValue = deepClone(effectFn())
+            }
+
+        }
+
+        function traverse(value, seen = new Set()) {
+            if (typeof value !== 'object' || value === null || seen.has(value)) return
+            seen.add(value)
+            for (const k in value) {
+                traverse(value[k], seen)
+            }
+            return value
+        }
+
+        // ？拥有继承关系的数据会触发多次，造成不必要的性能浪费
+
+        // 解决方案： 
+        // 在proxy set中 target原始对象 如原始对象不存在 则是原型对象（会变化） 
+        // receiver 每次就是特定的代理对象
+        // 根据这个特性可以做相应的判断
+
+        const obj = {}
+        const proto = {
+            bar: 1
+        }
+
+        const child = reactive(obj)
+        const parent = reactive(proto)
+
+        Object.setPrototypeOf(child, parent)
+
+
+
+        effect(() => {
+            console.log(child.bar);
+        })
+
+        console.log(child.raw === obj);
+        console.log(parent.raw === proto);
+
+
+        setTimeout(() => {
+            child.bar = 2
+        }, 3000)
+
+
+
+
+    </script>
+</body>
+
+</html>
