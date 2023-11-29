@@ -27,16 +27,27 @@
         const bucket = new WeakMap()
         const ITERATE_KEY = Symbol()
 
-        function reactive(data) {
+        function createReactive(data, isShallow = false) {
             return new Proxy(data, {
                 get(target, key, receiver) {
                     // 代理对象可以通过raw属性访问原始数据
                     if (key === 'raw') {
-                        // console.log('iiii');
                         return target
                     }
+                    const res = Reflect.get(target, key, receiver)
                     track(target, key)
-                    return Reflect.get(target, key, receiver)
+
+                    if (isShallow) {
+                        return res
+                    }
+
+                    if (typeof res === 'object' && res !== null) {
+                        return createReactive(res)
+                    }
+
+                    return res
+
+
                 },
 
                 ownKeys(target) {
@@ -63,7 +74,7 @@
                         if (oldValue !== newValue && (oldValue === oldValue || newValue === newValue)) {
                             trigger(target, key, type)
                         }
-                      
+
                     }
                     return res
 
@@ -233,6 +244,32 @@
             }
             return value
         }
+
+        // 深响应
+        function reactive(obj) {
+            return createReactive(obj)
+        }
+
+        // 浅响应
+        function shallowReactive(obj) {
+            return createReactive(obj, true)
+        }
+
+        const data = shallowReactive({
+            foo: 1,
+            bar: {
+                coo: 2
+            }
+        })
+
+        effect(() => {
+            console.log(data.bar.coo);
+        })
+
+        setTimeout(() => {
+            data.bar.coo = 5
+        }, 3000);
+        
 
 
     </script>
